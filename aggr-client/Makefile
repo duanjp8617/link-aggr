@@ -29,10 +29,10 @@ LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
-	gcc $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
+	g++ $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
 
 build/$(APP)-static: $(SRCS-y) Makefile $(PC_FILE) | build
-	gcc $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_STATIC)
+	g++ $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_STATIC)
 
 build:
 	@mkdir -p $@
