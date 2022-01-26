@@ -136,10 +136,14 @@ int main(int argc, char **argv)
 	uint8_t dmac[6] = {0x11, 0x44, 0x55, 0x66, 0x77, 0x88};
 	std::vector<struct rte_ether_hdr> eth_hdrs;
 	struct rte_ether_hdr eth_hdr;
-	rte_ether_addr_copy((rte_ether_addr*)smac, &eth_hdr.s_addr);
-	rte_ether_addr_copy((rte_ether_addr*)dmac, &eth_hdr.d_addr);
+	rte_ether_addr_copy((rte_ether_addr *)smac, &eth_hdr.s_addr);
+	rte_ether_addr_copy((rte_ether_addr *)dmac, &eth_hdr.d_addr);
 	eth_hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
-	
+
+	// prepare the ipv4 headers
+	uint32_t tx_ip_src_addr = (198U << 24) | (18 << 16) | (0 << 8) | 1;
+	uint32_t tx_ip_dst_addr = (198U << 24) | (18 << 16) | (0 << 8) | 2;
+
 	// payload_gen.gen_payload(batch);
 	// for (int i = 0; i < batch.size(); i++)
 	// {
