@@ -238,6 +238,7 @@ int main(int argc, char **argv)
 
 	// check that the port and the thread are on the same socket
 	assert(rte_socket_id() == rte_eth_dev_socket_id(PORT_ID));
+	std::cout<<"port "<<PORT_ID<<" runs on socket <<"<<rte_eth_dev_socket_id(PORT_ID)<<std::endl;
 
 	// initialize the port
 	ret = rte_eth_dev_configure(PORT_ID, 1, 1, &port_conf);
