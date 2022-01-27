@@ -139,7 +139,7 @@ int main(int argc, char **argv)
 	struct rte_udp_hdr udp_hdr;
 	udp_hdr.src_port = rte_cpu_to_be_16(1024);
 	udp_hdr.dst_port = rte_cpu_to_be_16(250);
-	udp_hdr.dgram_len = sizeof(struct rte_udp_hdr) + sizeof(subflow_header) + PAYLOAD_LEN;
+	udp_hdr.dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + sizeof(subflow_header) + PAYLOAD_LEN);
 	udp_hdr.dgram_cksum = 0;
 	udp_hdrs.push_back(udp_hdr);
 
@@ -241,13 +241,14 @@ int main(int argc, char **argv)
 	}
 
 	// offset 70, len 1508
-	struct rte_mbuf *mbuf = batch[0];
-	std::cout<<std::hex;
-	for (int i=0; i<1508; i++) {
+	struct rte_mbuf *mbuf = batch[2];
+	std::cout << std::hex;
+	for (int i = 0; i < 1508; i++)
+	{
 		uint64_t val = *rte_pktmbuf_mtod_offset(mbuf, uint8_t *, i);
-		std::cout<<"0x"<<val<<", ";
+		std::cout << "0x" << val << ", ";
 	}
-	std::cout<<std::endl;
+	std::cout << std::endl;
 
 	for (int i = 0; i < batch.size(); i++)
 	{
