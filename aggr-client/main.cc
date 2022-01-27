@@ -238,7 +238,7 @@ int main(int argc, char **argv)
 
 	// check that the port and the thread are on the same socket
 	assert(rte_socket_id() == rte_eth_dev_socket_id(PORT_ID));
-	std::cout<<"port "<<PORT_ID<<" runs on socket <<"<<rte_eth_dev_socket_id(PORT_ID)<<std::endl;
+	std::cout<<"port "<<PORT_ID<<" runs on socket "<<rte_eth_dev_socket_id(PORT_ID)<<std::endl;
 
 	// initialize the port
 	ret = rte_eth_dev_configure(PORT_ID, 1, 1, &port_conf);
@@ -297,41 +297,41 @@ int main(int argc, char **argv)
 
 	while (!force_quit)
 	{
-		// payload_gen.gen_payload(batch);
-		// for (int i = 0; i < batch.size(); i++)
-		// {
-		// 	struct rte_mbuf *mbuf = batch[i];
+		payload_gen.gen_payload(batch);
+		for (int i = 0; i < batch.size(); i++)
+		{
+			struct rte_mbuf *mbuf = batch[i];
 
-		// 	subflow_header header = sfheader_gen.gen_header();
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(subflow_header)),
-		// 			   (void *)&header,
-		// 			   sizeof(subflow_header));
+			subflow_header header = sfheader_gen.gen_header();
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(subflow_header)),
+					   (void *)&header,
+					   sizeof(subflow_header));
 
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
-		// 			   (void *)&udp_hdrs[0],
-		// 			   sizeof(struct rte_udp_hdr));
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
+					   (void *)&udp_hdrs[0],
+					   sizeof(struct rte_udp_hdr));
 
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
-		// 			   (void *)&ip_hdrs[header.subflow_idx],
-		// 			   sizeof(struct rte_ipv4_hdr));
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
+					   (void *)&ip_hdrs[header.subflow_idx],
+					   sizeof(struct rte_ipv4_hdr));
 
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
-		// 			   (void *)&eth_hdrs[0],
-		// 			   sizeof(struct rte_ether_hdr));
-		// }
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
+					   (void *)&eth_hdrs[0],
+					   sizeof(struct rte_ether_hdr));
+		}
 
-		// struct rte_mbuf **tx_pkts = batch.data();
-		// uint16_t nb_pkts = batch.size();
+		struct rte_mbuf **tx_pkts = batch.data();
+		uint16_t nb_pkts = batch.size();
 
-		// uint16_t nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
+		uint16_t nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
 
-		// while (nb_tx < nb_pkts)
-		// {
-		// 	tx_pkts += nb_tx;
-		// 	nb_pkts -= nb_tx;
+		while (nb_tx < nb_pkts)
+		{
+			tx_pkts += nb_tx;
+			nb_pkts -= nb_tx;
 
-		// 	nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
-		// }
+			nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
+		}
 	}
 
 	std::cout << "Closing port ..." << PORT_ID << std::endl;
