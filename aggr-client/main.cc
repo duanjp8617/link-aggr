@@ -5,6 +5,7 @@
 
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
+#include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_udp.h>
@@ -19,6 +20,8 @@
 #define MAX_MTU 1518
 
 #define SUBFLOW_MAGIC 0x12ABCDEF
+
+#define PORT_ID 0
 
 // define a global variable for quitting.
 static volatile bool force_quit = false;
@@ -114,6 +117,9 @@ int main(int argc, char **argv)
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
 
+	// print the socket id
+	std::cout << "The process is running on socket " << rte_socket_id() << std::endl;
+
 	// allocate the mempool
 	struct rte_mempool *mpool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF,
 														MEMPOOL_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
@@ -202,100 +208,117 @@ int main(int argc, char **argv)
 		ip_hdrs.push_back(ip_hdr);
 	}
 
-	// payload_gen.gen_payload(batch);
-	// for (int i = 0; i < batch.size(); i++)
-	// {
-	// 	struct rte_mbuf *mbuf = batch[i];
-	// 	std::cout << i << "th packet: len=" << mbuf->data_len << ", header_offset=" << mbuf->data_off << std::endl;
+	// initialize the port
+	struct rte_eth_conf port_conf = {
+		.rxmode = {
+			.split_hdr_size = 0,
+		},
+		.txmode = {
+			.mq_mode = ETH_MQ_TX_NONE,
+		},
+	};
 
-	// 	for (int j = 0; j < 1450; j++)
-	// 	{
-	// 		uint8_t val = *rte_pktmbuf_mtod_offset(mbuf, uint8_t *, j);
-	// 		assert(val != 0xfe);
-	// 	}
-
-	// 	rte_pktmbuf_free(mbuf);
-	// }
-
-	payload_gen.gen_payload(batch);
-	for (int i = 0; i < batch.size(); i++)
+	// get the number of port and check that the port id is valid
+	int nb_ports = rte_eth_dev_count_avail();
+	if (nb_ports == 0)
 	{
-		struct rte_mbuf *mbuf = batch[i];
+		// rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
+		std::cout << "No Ethernet ports" << std::endl;
+	}
+	assert(PORT_ID < nb_ports);
 
-		subflow_header header = sfheader_gen.gen_header();
-		rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(subflow_header)),
-				   (void *)&header,
-				   sizeof(subflow_header));
+	// check that the port and the thread are on the same socket
+	assert(rte_socket_id() == rte_eth_dev_socket_id(PORT_ID));
 
-		rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
-				   (void *)&udp_hdrs[0],
-				   sizeof(struct rte_udp_hdr));
-
-		rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
-				   (void *)&ip_hdrs[header.subflow_idx],
-				   sizeof(struct rte_ipv4_hdr));
-
-		rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
-				   (void *)&eth_hdrs[0],
-				   sizeof(struct rte_ether_hdr));
+	// initialize the port
+	ret = rte_eth_dev_configure(PORT_ID, 1, 1, &port_conf);
+	if (ret < 0)
+	{
+		rte_exit(EXIT_FAILURE,
+				 "Cannot adjust number of descriptors: err=%d, port=%u\n",
+				 ret, PORT_ID);
 	}
 
-	// offset 70, len 1508
-	struct rte_mbuf *mbuf = batch[2];
-	std::cout << std::hex;
-	for (int i = 0; i < 1508; i++)
+	// adjust the descriptor
+	uint16_t ndesc = 256;
+	ret = rte_eth_dev_adjust_nb_rx_tx_desc(PORT_ID, &ndesc, &ndesc);
+	if (ret < 0)
 	{
-		uint64_t val = *rte_pktmbuf_mtod_offset(mbuf, uint8_t *, i);
-		std::cout << "0x" << val << ", ";
+		rte_exit(EXIT_FAILURE,
+				 "Cannot adjust number of descriptors: err=%d, port=%u\n",
+				 ret, PORT_ID);
 	}
-	std::cout << std::endl;
 
-	for (int i = 0; i < batch.size(); i++)
+	// init rx queue
+	ret = rte_eth_rx_queue_setup(PORT_ID, 0, ndesc,
+								 rte_eth_dev_socket_id(PORT_ID),
+								 NULL,
+								 mpool);
+	if (ret < 0)
 	{
-		// struct rte_mbuf *mbuf = batch[i];
-		// std::cout << i << "th packet: len=" << mbuf->data_len << ", header_offset=" << mbuf->data_off << std::endl;
-
-		// for (int j = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + sizeof(subflow_header); j < sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + sizeof(subflow_header) + PAYLOAD_LEN; j++)
-		// {
-		// 	uint8_t val = *rte_pktmbuf_mtod_offset(mbuf, uint8_t *, j);
-		// 	assert(val == 0xfe);
-		// }
-
-		rte_pktmbuf_free(mbuf);
+		rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n",
+				 ret, PORT_ID);
 	}
+
+	// init tx queue
+	ret = rte_eth_tx_queue_setup(PORT_ID, 0, ndesc,
+								 rte_eth_dev_socket_id(PORT_ID),
+								 NULL);
+	if (ret < 0)
+	{
+		rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u\n",
+				 ret, PORT_ID);
+	}
+
+	/* Start device */
+	ret = rte_eth_dev_start(PORT_ID);
+	if (ret < 0)
+	{
+		rte_exit(EXIT_FAILURE, "rte_eth_dev_start:err=%d, port=%u\n",
+				 ret, PORT_ID);
+	}
+	rte_eth_promiscuous_enable(PORT_ID);
+
+	std::cout << "port " << PORT_ID << " is initialized, ready to send" << std::endl;
 
 	while (!force_quit)
 	{
-		// payload_gen.gen_payload(batch);
-		// for (int i = 0; i < batch.size(); i++)
-		// {
-		// 	struct rte_mbuf *mbuf = batch[i];
+		payload_gen.gen_payload(batch);
+		for (int i = 0; i < batch.size(); i++)
+		{
+			struct rte_mbuf *mbuf = batch[i];
 
-		// 	subflow_header header = sfheader_gen.gen_header();
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(subflow_header)),
-		// 			   (void *)&header,
-		// 			   sizeof(subflow_header));
+			subflow_header header = sfheader_gen.gen_header();
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(subflow_header)),
+					   (void *)&header,
+					   sizeof(subflow_header));
 
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
-		// 			   (void *)&udp_hdrs[0],
-		// 			   sizeof(struct rte_udp_hdr));
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
+					   (void *)&udp_hdrs[0],
+					   sizeof(struct rte_udp_hdr));
 
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
-		// 			   (void *)&ip_hdrs[header.subflow_idx],
-		// 			   sizeof(struct rte_ipv4_hdr));
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
+					   (void *)&ip_hdrs[header.subflow_idx],
+					   sizeof(struct rte_ipv4_hdr));
 
-		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
-		// 	           (void *)&eth_hdrs[0],
-		// 			   sizeof(struct rte_ether_hdr));
-		// }
+			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
+					   (void *)&eth_hdrs[0],
+					   sizeof(struct rte_ether_hdr));
+		}
+
+		struct rte_mbuf **tx_pkts = batch.data();
+		uint16_t nb_pkts = batch.size();
+
+		uint16_t nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
+
+		while (nb_tx < nb_pkts)
+		{
+			tx_pkts += nb_tx;
+			nb_pkts -= nb_tx;
+
+			nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
+		}
 	}
 
 	rte_mempool_free(mpool);
-
-	// subflow_header_generator header_gen = subflow_header_generator();
-	// for (int i = 0; i < 100; i++)
-	// {
-	// 	subflow_header header = header_gen.gen_header();
-	// 	std::cout << "subflow_idx: " << header.subflow_idx << ", seq_num: " << header.seq_num << std::endl;
-	// }
 }
