@@ -118,7 +118,7 @@ int main(int argc, char **argv)
 	signal(SIGTERM, signal_handler);
 
 	// print the socket id
-	std::cout << "The process is running on socket " << rte_socket_id() << std::endl;
+	std::cout << "The thread is running on socket " << rte_socket_id() << std::endl;
 
 	// allocate the mempool
 	struct rte_mempool *mpool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF,
@@ -222,10 +222,19 @@ int main(int argc, char **argv)
 	int nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 	{
-		// rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
-		std::cout << "No Ethernet ports" << std::endl;
+		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 	}
 	assert(PORT_ID < nb_ports);
+
+	// get the dev info
+	struct rte_eth_dev_info dev_info;
+	ret = rte_eth_dev_info_get(PORT_ID, &dev_info);
+	if (ret != 0)
+	{
+		rte_exit(EXIT_FAILURE,
+				 "Error during getting device (port %u) info: %s\n",
+				 PORT_ID, strerror(-ret));
+	}
 
 	// check that the port and the thread are on the same socket
 	assert(rte_socket_id() == rte_eth_dev_socket_id(PORT_ID));
@@ -250,9 +259,11 @@ int main(int argc, char **argv)
 	}
 
 	// init rx queue
+	struct rte_eth_rxconf rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = port_conf.rxmode.offloads;
 	ret = rte_eth_rx_queue_setup(PORT_ID, 0, ndesc,
 								 rte_eth_dev_socket_id(PORT_ID),
-								 NULL,
+								 &rxq_conf,
 								 mpool);
 	if (ret < 0)
 	{
@@ -261,9 +272,11 @@ int main(int argc, char **argv)
 	}
 
 	// init tx queue
+	struct rte_eth_txconf txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = port_conf.txmode.offloads;
 	ret = rte_eth_tx_queue_setup(PORT_ID, 0, ndesc,
 								 rte_eth_dev_socket_id(PORT_ID),
-								 NULL);
+								 &txq_conf);
 	if (ret < 0)
 	{
 		rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u\n",
@@ -283,42 +296,53 @@ int main(int argc, char **argv)
 
 	while (!force_quit)
 	{
-		payload_gen.gen_payload(batch);
-		for (int i = 0; i < batch.size(); i++)
-		{
-			struct rte_mbuf *mbuf = batch[i];
+		// payload_gen.gen_payload(batch);
+		// for (int i = 0; i < batch.size(); i++)
+		// {
+		// 	struct rte_mbuf *mbuf = batch[i];
 
-			subflow_header header = sfheader_gen.gen_header();
-			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(subflow_header)),
-					   (void *)&header,
-					   sizeof(subflow_header));
+		// 	subflow_header header = sfheader_gen.gen_header();
+		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(subflow_header)),
+		// 			   (void *)&header,
+		// 			   sizeof(subflow_header));
 
-			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
-					   (void *)&udp_hdrs[0],
-					   sizeof(struct rte_udp_hdr));
+		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
+		// 			   (void *)&udp_hdrs[0],
+		// 			   sizeof(struct rte_udp_hdr));
 
-			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
-					   (void *)&ip_hdrs[header.subflow_idx],
-					   sizeof(struct rte_ipv4_hdr));
+		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
+		// 			   (void *)&ip_hdrs[header.subflow_idx],
+		// 			   sizeof(struct rte_ipv4_hdr));
 
-			rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
-					   (void *)&eth_hdrs[0],
-					   sizeof(struct rte_ether_hdr));
-		}
+		// 	rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
+		// 			   (void *)&eth_hdrs[0],
+		// 			   sizeof(struct rte_ether_hdr));
+		// }
 
-		struct rte_mbuf **tx_pkts = batch.data();
-		uint16_t nb_pkts = batch.size();
+		// struct rte_mbuf **tx_pkts = batch.data();
+		// uint16_t nb_pkts = batch.size();
 
-		uint16_t nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
+		// uint16_t nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
 
-		while (nb_tx < nb_pkts)
-		{
-			tx_pkts += nb_tx;
-			nb_pkts -= nb_tx;
+		// while (nb_tx < nb_pkts)
+		// {
+		// 	tx_pkts += nb_tx;
+		// 	nb_pkts -= nb_tx;
 
-			nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
-		}
+		// 	nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
+		// }
 	}
 
+	std::cout << "Closing port ..." << PORT_ID << std::endl;
+	;
+	ret = rte_eth_dev_stop(PORT_ID);
+	if (ret != 0)
+	{
+		std::cout << "rte_eth_dev_stop: err=" << ret << ", port=" << PORT_ID << std::endl;
+	}
+	rte_eth_dev_close(PORT_ID);
+	std::cout << "Done" << std::endl;
+
 	rte_mempool_free(mpool);
+	rte_eal_cleanup();
 }
