@@ -150,8 +150,8 @@ int main(int argc, char **argv)
 	udp_hdrs.push_back(udp_hdr);
 
 	// prepare the ethernet headers
-	uint8_t smac[6] = {0x22, 0x11, 0x33, 0x44, 0x55, 0x66};
-	uint8_t dmac[6] = {0x11, 0x44, 0x55, 0x66, 0x77, 0x88};
+	uint8_t smac[6] = {0x0c, 0x42, 0xa1, 0x3a, 0x67, 0x38};
+	uint8_t dmac[6] = {0x08, 0x68, 0x8d, 0x61, 0x76, 0x84};
 	std::vector<struct rte_ether_hdr> eth_hdrs;
 	struct rte_ether_hdr eth_hdr;
 	rte_ether_addr_copy((rte_ether_addr *)smac, &eth_hdr.s_addr);
@@ -161,9 +161,9 @@ int main(int argc, char **argv)
 
 	// prepare the ipv4 addrs
 	uint32_t sip = (198U << 24) | (18 << 16) | (0 << 8) | 1;
-	uint32_t dip1 = (198U << 24) | (18 << 16) | (0 << 8) | 2;
-	uint32_t dip2 = (198U << 24) | (18 << 16) | (0 << 8) | 3;
-	uint32_t dip3 = (198U << 24) | (18 << 16) | (0 << 8) | 4;
+	uint32_t dip1 = (192U << 24) | (168 << 16) | (81 << 8) | 2;
+	uint32_t dip2 = (192U << 24) | (168 << 16) | (82 << 8) | 3;
+	uint32_t dip3 = (192U << 24) | (168 << 16) | (83 << 8) | 4;
 	std::vector<uint32_t> ips;
 	ips.push_back(dip1);
 	ips.push_back(dip2);
@@ -238,7 +238,7 @@ int main(int argc, char **argv)
 
 	// check that the port and the thread are on the same socket
 	assert(rte_socket_id() == rte_eth_dev_socket_id(PORT_ID));
-	std::cout<<"port "<<PORT_ID<<" runs on socket "<<rte_eth_dev_socket_id(PORT_ID)<<std::endl;
+	std::cout << "port " << PORT_ID << " runs on socket " << rte_eth_dev_socket_id(PORT_ID) << std::endl;
 
 	// initialize the port
 	ret = rte_eth_dev_configure(PORT_ID, 1, 1, &port_conf);
