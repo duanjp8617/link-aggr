@@ -9,6 +9,7 @@
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_udp.h>
+#include <rte_timer.h>
 
 // define some macros as configuration parameters
 #define BATCH_SIZE 32
@@ -22,6 +23,13 @@
 #define SUBFLOW_MAGIC 0x12ABCDEF
 
 #define PORT_ID 0
+
+// some parameters for speed calculation
+static constexpr uint64_t packet_size_bit = (PAYLOAD_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + sizeof(struct rte_ether_hdr)) * 8;
+static constexpr uint64_t batch_bit = BATCH_SIZE * packet_size_bit;
+static constexpr uint64_t flow_speed_bit = (uint64_t)6 * (uint64_t)1024 * (uint64_t)1024 * (uint64_t)1024;
+static constexpr uint64_t batch_count = flow_speed_bit / batch_bit;
+static constexpr uint64_t interval_us = (uint64_t)1000000 / batch_count;
 
 // define a global variable for quitting.
 static volatile bool force_quit = false;
@@ -100,6 +108,111 @@ public:
 	struct rte_mempool *_mpool;
 };
 
+static int
+another_flow(void *mpool)
+{
+	// prepare the payload generator
+	struct rte_mempool *mp = (struct rte_mempool *)mpool;
+	std::vector<uint8_t> payload_template(PAYLOAD_LEN, 0xfe);
+	payload_generator payload_gen = payload_generator(mp, std::move(payload_template));
+
+	// prepare the batch
+	std::vector<struct rte_mbuf *> batch(BATCH_SIZE, nullptr);
+	assert(batch.size() == BATCH_SIZE);
+
+	// prepare the udp header
+	struct rte_udp_hdr udp_hdr;
+	udp_hdr.src_port = rte_cpu_to_be_16(1024);
+	udp_hdr.dst_port = rte_cpu_to_be_16(250);
+	udp_hdr.dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + sizeof(subflow_header) + PAYLOAD_LEN);
+	udp_hdr.dgram_cksum = 0;
+
+	// prepare the eth header
+	uint8_t smac[6] = {0x0c, 0x42, 0xa1, 0x3a, 0x67, 0x38};
+	uint8_t dmac[6] = {0x08, 0x68, 0x8d, 0x61, 0x76, 0x84};
+	std::vector<struct rte_ether_hdr> eth_hdrs;
+	struct rte_ether_hdr eth_hdr;
+	rte_ether_addr_copy((rte_ether_addr *)smac, &eth_hdr.s_addr);
+	rte_ether_addr_copy((rte_ether_addr *)dmac, &eth_hdr.d_addr);
+	eth_hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+
+	// prepare the ipv4 header
+	uint32_t sip = (198U << 24) | (18 << 16) | (0 << 8) | 1;
+	uint32_t dip = (192U << 24) | (168 << 16) | (81 << 8) | 2;
+	struct rte_ipv4_hdr ip_hdr;
+	ip_hdr.version_ihl = RTE_IPV4_VHL_DEF;
+	ip_hdr.type_of_service = 0;
+	ip_hdr.fragment_offset = 0;
+	ip_hdr.time_to_live = 64;
+	ip_hdr.next_proto_id = IPPROTO_UDP;
+	ip_hdr.packet_id = 0;
+	ip_hdr.total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + sizeof(subflow_header) + PAYLOAD_LEN);
+	ip_hdr.src_addr = rte_cpu_to_be_32(sip);
+	ip_hdr.dst_addr = rte_cpu_to_be_32(dip);
+	uint16_t *ptr16 = (uint16_t *)(&ip_hdr);
+	uint32_t ip_cksum = 0;
+	ip_cksum += ptr16[0];
+	ip_cksum += ptr16[1];
+	ip_cksum += ptr16[2];
+	ip_cksum += ptr16[3];
+	ip_cksum += ptr16[4];
+	ip_cksum += ptr16[6];
+	ip_cksum += ptr16[7];
+	ip_cksum += ptr16[8];
+	ip_cksum += ptr16[9];
+	ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
+			   (ip_cksum & 0x0000FFFF);
+	if (ip_cksum > 65535)
+		ip_cksum -= 65535;
+	ip_cksum = (~ip_cksum) & 0x0000FFFF;
+	if (ip_cksum == 0)
+		ip_cksum = 0xFFFF;
+	ip_hdr.hdr_checksum = (uint16_t)ip_cksum;
+
+	uint64_t hz = rte_get_timer_hz();
+	uint64_t prev_tsc = rte_get_timer_cycles();
+	uint64_t duration_hz = (hz / 1000000) * interval_us;
+
+	while (!force_quit)
+	{
+		uint64_t cur_tsc = rte_get_timer_cycles();
+		if ((cur_tsc - prev_tsc) >= duration_hz)
+		{
+
+			payload_gen.gen_payload(batch);
+			for (int i = 0; i < batch.size(); i++)
+			{
+				struct rte_mbuf *mbuf = batch[i];
+
+				rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr)),
+						   (void *)&udp_hdr,
+						   sizeof(struct rte_udp_hdr));
+
+				rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr)),
+						   (void *)&ip_hdr,
+						   sizeof(struct rte_ipv4_hdr));
+
+				rte_memcpy((void *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr)),
+						   (void *)&eth_hdr,
+						   sizeof(struct rte_ether_hdr));
+			}
+
+			struct rte_mbuf **tx_pkts = batch.data();
+			uint16_t nb_pkts = batch.size();
+
+			uint16_t nb_tx = rte_eth_tx_burst(PORT_ID, 1, tx_pkts, nb_pkts);
+
+			for (int i = nb_tx; i < nb_pkts; i++)
+			{
+				rte_pktmbuf_free(tx_pkts[i]);
+			}
+
+			prev_tsc = cur_tsc;
+		}
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	assert(sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + sizeof(subflow_header) < RTE_PKTMBUF_HEADROOM);
@@ -111,6 +224,9 @@ int main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
 	argc -= ret;
 	argv += ret;
+
+	// init rte time library
+	rte_timer_subsystem_init();
 
 	// register signal handler
 	force_quit = false;
@@ -240,8 +356,8 @@ int main(int argc, char **argv)
 	assert(rte_socket_id() == rte_eth_dev_socket_id(PORT_ID));
 	std::cout << "port " << PORT_ID << " runs on socket " << rte_eth_dev_socket_id(PORT_ID) << std::endl;
 
-	// initialize the port
-	ret = rte_eth_dev_configure(PORT_ID, 1, 1, &port_conf);
+	// initialize the port, setup two queues
+	ret = rte_eth_dev_configure(PORT_ID, 1, 2, &port_conf);
 	if (ret < 0)
 	{
 		rte_exit(EXIT_FAILURE,
@@ -280,8 +396,16 @@ int main(int argc, char **argv)
 								 &txq_conf);
 	if (ret < 0)
 	{
-		rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u\n",
-				 ret, PORT_ID);
+		rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u, queue=%u\n",
+				 ret, PORT_ID, 0);
+	}
+	ret = rte_eth_tx_queue_setup(PORT_ID, 1, ndesc,
+								 rte_eth_dev_socket_id(PORT_ID),
+								 &txq_conf);
+	if (ret < 0)
+	{
+		rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u, queue=%u\n",
+				 ret, PORT_ID, 1);
 	}
 
 	/* Start device */
@@ -294,6 +418,9 @@ int main(int argc, char **argv)
 	rte_eth_promiscuous_enable(PORT_ID);
 
 	std::cout << "port " << PORT_ID << " is initialized, ready to send" << std::endl;
+
+	// launch the transmission of a new flow on lcore 1
+	rte_eal_remote_launch(another_flow, (void *)mpool, 1);
 
 	while (!force_quit)
 	{
@@ -333,9 +460,10 @@ int main(int argc, char **argv)
 			nb_tx = rte_eth_tx_burst(PORT_ID, 0, tx_pkts, nb_pkts);
 		}
 	}
+	// wait for the termination of lcore 1
+	rte_eal_wait_lcore(1);
 
 	std::cout << "Closing port ..." << PORT_ID << std::endl;
-	;
 	ret = rte_eth_dev_stop(PORT_ID);
 	if (ret != 0)
 	{
